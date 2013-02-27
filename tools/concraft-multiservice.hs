@@ -5,13 +5,16 @@
 import Options.Applicative
 import System.CPUTime (getCPUTime)
 import Data.Int (Int32)
+import Data.List (intercalate)
 import qualified System.Process.Text.Lazy as Proc
 import qualified Data.Binary as Binary
 import qualified System.IO as IO
 import qualified Data.Map as M
 import qualified Data.Vector as V
 import qualified Data.Text.Lazy as L
+import qualified Data.Text.Lazy.IO as L
 import qualified Data.HashMap.Strict as H
+import qualified Control.Monad.State.Strict as State
 
 -- Thrift library
 import Thrift.Server
@@ -36,18 +39,80 @@ instance Iface.AnnotatingService_Iface C.Concraft where
             Nothing -> return ttext
             Just ps -> do
                 beg <- getCPUTime
-                ps' <- V.fromList <$> mapM (annPar concraft) ps
+                ps' <- evalCM $ mapM (annPar concraft) ps
                 end <- getCPUTime
                 let coef = 10 ^ (9 :: Integer)
                 let diff = (end - beg) `div` coef
                 return $ ttext
-                    { TT.f_TText_paragraphs = Just ps'
-                    , TT.f_TText_annotationHeaders = Just $
-                        addHeaders diff (getHeaders ttext) }
+                    { TT.f_TText_paragraphs             = Just (V.fromList ps')
+                    , TT.f_TText_annotationHeaders      = Just $
+                        addHeaders diff (getHeaders ttext)
+                    , TT.f_TText_textHeader             = Just textHeader
+                    , TT.f_TText_annotationDetails      = Just annDetails
+                    , TT.f_TText_summary                = Just ""
+                    , TT.f_TText_coreferences           = Just V.empty }
       where
         getHeaders = maybe H.empty id . TT.f_TText_annotationHeaders
+        textHeader = TT.THeader
+            { f_THeader_id                  = Just ""
+            , f_THeader_title               = Just ""
+            , f_THeader_distributor         = Just ""
+            , f_THeader_publicationTime     = Just 0
+            , f_THeader_processingDuration  = Just 0
+            , f_THeader_sourceDescText      = Just "" 
+            , f_THeader_retrievedFrom       = Just "" }
+        annDetails = TT.AnnotationDetails
+            { f_AnnotationDetails_hasSegmentsDisambiguated      = Just True
+            , f_AnnotationDetails_hasMorphosyntaxDisambiguated  = Just True
+            , f_AnnotationDetails_hasMorphosyntaxPartiallyDisambiguated =
+                 Just False }
 
--- | Add appropriate headers.
+-- A record of current identifier values.
+data IdS = IdS
+    { currParId     :: !Int
+    , currSentId    :: !Int
+    , currTokId     :: !Int }
+
+-- | Initial identifier values.
+initIdS :: IdS
+initIdS = IdS 0 0 0
+
+-- | A Concraft monad.
+type CM = State.StateT IdS IO
+
+-- | Evalueate CM computation.
+evalCM :: CM a -> IO a
+evalCM cm = State.evalStateT cm initIdS
+
+-- | Build textual identifier value.
+buildId :: String -> [Int] -> L.Text
+buildId pref ks =
+    L.pack $ pref ++ intercalate "." (map show ks)
+
+-- | Get new paragraph ID.
+newParId :: CM L.Text
+newParId = do
+    State.modify $ \idS -> idS {currParId = currParId idS + 1}
+    buildId "p-" <$> sequence [State.gets currParId]
+
+-- | Get new sentence ID.
+newSentId :: CM L.Text
+newSentId = do
+    State.modify $ \idS -> idS {currSentId = currSentId idS + 1}
+    buildId "s-" <$> sequence
+        [ State.gets currParId
+        , State.gets currSentId ]
+
+-- | Get new token ID.
+newTokId :: CM L.Text
+newTokId = do
+    State.modify $ \idS -> idS {currTokId = currTokId idS + 1}
+    buildId "seg-" <$> sequence
+        [ State.gets currParId
+        , State.gets currSentId
+        , State.gets currTokId ]
+
+-- | Add appropriate annotation headers.
 addHeaders
     :: Integer
     -> H.HashMap TT.TAnnotationLayer TT.THeader
@@ -66,13 +131,18 @@ addHeaders procTime
         , f_THeader_retrievedFrom = Just "" }
 
 -- | Annotate paragraph.
-annPar :: C.Concraft -> TT.TParagraph -> IO TT.TParagraph
+annPar :: C.Concraft -> TT.TParagraph -> CM TT.TParagraph
 annPar concraft tpar = case TT.f_TParagraph_text tpar of
     Nothing -> return tpar
     Just tx -> do
-        par <- map (disamb concraft) <$> macalyse tx
-        let sentences = V.fromList (convertPar tx par)
-        return $ tpar {TT.f_TParagraph_sentences = Just sentences}
+        parId <- newParId
+        State.lift $ L.putStr "> "
+        State.lift $ L.putStrLn tx
+        par <- map (disamb concraft) <$> State.lift (macalyse tx)
+        sentences <- V.fromList <$> convertPar tx par
+        return $ tpar
+            { TT.f_TParagraph_id        = Just parId
+            , TT.f_TParagraph_sentences = Just sentences }
 
 -- | Use Maca tool to analyse the input text.
 macalyse :: L.Text -> IO [[P.Token]]
@@ -88,31 +158,32 @@ disamb concraft toks =
     in  C.tagSent sentH concraft $ toks
 
 -- | Convert the paragraph to the list of thrift sentences.
-convertPar :: L.Text -> [[P.Token]] -> [TT.TSentence]
+convertPar :: L.Text -> [[P.Token]] -> CM [TT.TSentence]
 convertPar tx toks =
     let tokOffs = computeOffsets tx toks
-    in  map convertSent tokOffs 
+    in  mapM convertSent tokOffs 
 
 -- | Convert the sentence to the thrift form.
-convertSent :: [(P.Token, Int32)] -> TT.TSentence
-convertSent tokOffs = TT.TSentence
-    { f_TSentence_id                = Just ""
-    , f_TSentence_tokens            = Just (V.fromList toks)
-    , f_TSentence_rejectedTokens    = Just V.empty
-    , f_TSentence_words             = Just V.empty
-    , f_TSentence_groups            = Just V.empty
-    , f_TSentence_names             = Just V.empty
-    , f_TSentence_dependencyParse   = Just V.empty
-    , f_TSentence_mentions          = Just V.empty }
-  where
-    toks =
+convertSent :: [(P.Token, Int32)] -> CM TT.TSentence
+convertSent tokOffs = do
+    sentId <- newSentId
+    toks   <- sequence
         [ convertTok tok off
         | (tok, off) <- tokOffs ]
+    return $ TT.TSentence
+        { f_TSentence_id                = Just sentId
+        , f_TSentence_tokens            = Just (V.fromList toks)
+        , f_TSentence_rejectedTokens    = Just V.empty
+        , f_TSentence_words             = Just V.empty
+        , f_TSentence_groups            = Just V.empty
+        , f_TSentence_names             = Just V.empty
+        , f_TSentence_dependencyParse   = Just V.empty
+        , f_TSentence_mentions          = Just V.empty }
 
 -- | Convert the token to the thrift form.
-convertTok :: P.Token -> Int32 -> TT.TToken
-convertTok tok offset = TT.TToken
-    { f_TToken_id                       = Just ""
+convertTok :: P.Token -> Int32 -> CM TT.TToken
+convertTok tok offset = newTokId >>= \tokId -> return $ TT.TToken
+    { f_TToken_id                       = Just tokId
     , f_TToken_orth                     = (Just . L.fromStrict) (P.orth tok)
     , f_TToken_offset                   = Just offset
     , f_TToken_noPrecedingSpace         = Just (P.space tok == P.None)
@@ -138,7 +209,7 @@ convertInterp P.Interp{..} = TT.TInterpretation
 
 -- | Split tag into the (class, msd) pair.
 splitTag :: F.Tag -> (L.Text, L.Text)
-splitTag = L.span (==':') . L.fromStrict
+splitTag = L.break (==':') . L.fromStrict
 
 -- | Compute token offsets.
 -- TODO: This is a stub, implement real offsets computation.
