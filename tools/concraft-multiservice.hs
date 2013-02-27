@@ -4,6 +4,7 @@
 
 import Options.Applicative
 import System.CPUTime (getCPUTime)
+import Control.Arrow (second)
 import Data.Int (Int32)
 import Data.List (intercalate)
 import qualified System.Process.Text.Lazy as Proc
@@ -209,7 +210,7 @@ convertInterp P.Interp{..} = TT.TInterpretation
 
 -- | Split tag into the (class, msd) pair.
 splitTag :: F.Tag -> (L.Text, L.Text)
-splitTag = L.break (==':') . L.fromStrict
+splitTag = second (L.drop 1) . L.break (==':') . L.fromStrict
 
 -- | Compute token offsets.
 -- TODO: This is a stub, implement real offsets computation.
