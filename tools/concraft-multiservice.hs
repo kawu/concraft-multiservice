@@ -68,7 +68,7 @@ instance Iface.AnnotatingService_Iface C.Concraft where
             , f_AnnotationDetails_hasMorphosyntaxPartiallyDisambiguated =
                  Just False }
 
--- A record of current identifier values.
+-- | A record of current identifier values.
 data IdS = IdS
     { currParId     :: !Int
     , currSentId    :: !Int
@@ -234,7 +234,7 @@ service = Service
          ( long "port"
         <> short 'p'
         <> help "Port number"
-        <> value 10008 )
+        <> value 10018 )
 
 decodeModel :: FilePath -> IO C.Concraft
 decodeModel = Binary.decodeFile
