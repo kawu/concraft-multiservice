@@ -78,6 +78,10 @@ instance Iface.AnnotatingService_Iface ConPL where
             , f_AnnotationDetails_hasMorphosyntaxPartiallyDisambiguated =
                  Just False }
 
+---------------------------
+-- Identifier record
+---------------------------
+
 -- | A record of current identifier values.
 data IdS = IdS
     { currParId     :: !Int
@@ -103,13 +107,18 @@ buildId pref ks =
 -- | Get new paragraph ID.
 newParId :: CM L.Text
 newParId = do
-    S.modify $ \idS -> idS {currParId = currParId idS + 1}
+    S.modify $ \idS -> idS
+        { currParId  = currParId idS + 1
+        , currSentId = 0   
+        , currTokId  = 0 }
     buildId "p-" <$> sequence [S.gets currParId]
 
 -- | Get new sentence ID.
 newSentId :: CM L.Text
 newSentId = do
-    S.modify $ \idS -> idS {currSentId = currSentId idS + 1}
+    S.modify $ \idS -> idS
+        { currSentId = currSentId idS + 1
+        , currTokId  = (-1) }
     buildId "s-" <$> sequence
         [ S.gets currParId
         , S.gets currSentId ]
@@ -122,6 +131,10 @@ newTokId = do
         [ S.gets currParId
         , S.gets currSentId
         , S.gets currTokId ]
+
+----------------------------
+-- Conversion and annotation
+----------------------------
 
 -- | Add appropriate annotation headers.
 addHeaders
@@ -222,14 +235,14 @@ computeOffsets :: L.Text -> [[X.Seg a]] -> [[(X.Seg a, Int32)]]
 computeOffsets txt xss =
     flip S.evalState (txt, 0) $ forM xss $ mapM $ \seg -> do
         (x, i) <- S.get
-        let (y, j) = eat seg (x, i)
+        let (y, j) = eatSeg seg (x, i)
         S.put (y, j)
         return (seg, i)
 
 -- | "Eat" word from the beginning of the given text
 -- and increase the offset counter.
-eat :: X.Seg a -> (L.Text, Int32) -> (L.Text, Int32)
-eat seg (tt, i) = case L.stripPrefix orth t1 of
+eatSeg :: X.Seg a -> (L.Text, Int32) -> (L.Text, Int32)
+eatSeg seg (tt, i) = case L.stripPrefix orth t1 of
     Nothing -> error "Error during computation of offsets"
     Just t2 -> (t2, i + fromIntegral (L.length t0 + L.length orth))
   where
