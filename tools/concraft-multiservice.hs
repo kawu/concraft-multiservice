@@ -86,7 +86,7 @@ data IdS = IdS
 
 -- | Initial identifier values.
 initIdS :: IdS
-initIdS = IdS 0 0 0
+initIdS = IdS 0 0 (-1)
 
 -- | A Concraft monad.
 type CM = S.StateT IdS IO
