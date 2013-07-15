@@ -5,16 +5,17 @@
 import Options.Applicative
 import System.CPUTime (getCPUTime)
 import Control.Arrow (second)
-import Control.Monad (void)
+import Control.Monad (void, forM)
 import Data.Int (Int32)
 import Data.List (intercalate)
 import qualified System.IO as IO
+import qualified Data.Char as C
 import qualified Data.Map as M
 import qualified Data.Vector as V
 import qualified Data.Text.Lazy as L
 import qualified Data.Text.Lazy.IO as L
 import qualified Data.HashMap.Strict as H
-import qualified Control.Monad.State.Strict as State
+import qualified Control.Monad.State.Strict as S
 import           Control.Monad.State.Strict (lift)
 
 -- Thrift library
@@ -88,11 +89,11 @@ initIdS :: IdS
 initIdS = IdS 0 0 0
 
 -- | A Concraft monad.
-type CM = State.StateT IdS IO
+type CM = S.StateT IdS IO
 
 -- | Evalueate CM computation.
 evalCM :: CM a -> IO a
-evalCM cm = State.evalStateT cm initIdS
+evalCM cm = S.evalStateT cm initIdS
 
 -- | Build textual identifier value.
 buildId :: String -> [Int] -> L.Text
@@ -102,25 +103,25 @@ buildId pref ks =
 -- | Get new paragraph ID.
 newParId :: CM L.Text
 newParId = do
-    State.modify $ \idS -> idS {currParId = currParId idS + 1}
-    buildId "p-" <$> sequence [State.gets currParId]
+    S.modify $ \idS -> idS {currParId = currParId idS + 1}
+    buildId "p-" <$> sequence [S.gets currParId]
 
 -- | Get new sentence ID.
 newSentId :: CM L.Text
 newSentId = do
-    State.modify $ \idS -> idS {currSentId = currSentId idS + 1}
+    S.modify $ \idS -> idS {currSentId = currSentId idS + 1}
     buildId "s-" <$> sequence
-        [ State.gets currParId
-        , State.gets currSentId ]
+        [ S.gets currParId
+        , S.gets currSentId ]
 
 -- | Get new token ID.
 newTokId :: CM L.Text
 newTokId = do
-    State.modify $ \idS -> idS {currTokId = currTokId idS + 1}
+    S.modify $ \idS -> idS {currTokId = currTokId idS + 1}
     buildId "seg-" <$> sequence
-        [ State.gets currParId
-        , State.gets currSentId
-        , State.gets currTokId ]
+        [ S.gets currParId
+        , S.gets currSentId
+        , S.gets currTokId ]
 
 -- | Add appropriate annotation headers.
 addHeaders
@@ -207,12 +208,31 @@ convertInterp X.Interp{..} = TT.TInterpretation
 splitTag :: X.Tag -> (L.Text, L.Text)
 splitTag = second (L.drop 1) . L.break (==':') . L.fromStrict
 
+----------------------------------
+-- Offset computation
+----------------------------------
+
+-- | TODO: Use more idiomatic code instead of the state monad
+-- in order to make the function work lazily.
+
 -- | Compute token offsets.
--- TODO: This is a stub, implement real offsets computation.
-computeOffsets :: L.Text -> [[X.Seg X.Tag]] -> [[(X.Seg X.Tag, Int32)]]
-computeOffsets _ tokss =
-    [ map (,0) toks
-    | toks <- tokss ]
+computeOffsets :: L.Text -> [[X.Seg a]] -> [[(X.Seg a, Int32)]]
+computeOffsets txt xss =
+    flip S.evalState (txt, 0) $ forM xss $ mapM $ \seg -> do
+        (x, i) <- S.get
+        let (y, j) = eat seg (x, i)
+        S.put (y, j)
+        return (seg, i)
+
+-- | "Eat" word from the beginning of the given text
+-- and increase the offset counter.
+eat :: X.Seg a -> (L.Text, Int32) -> (L.Text, Int32)
+eat seg (tt, i) = case L.stripPrefix orth t1 of
+    Nothing -> error "Error during computation of offsets"
+    Just t2 -> (t2, i + fromIntegral (L.length t0 + L.length orth))
+  where
+    (t0, t1) = L.span C.isSpace tt
+    orth = L.fromStrict $ X.orth $ X.word seg
 
 ----------------------------------
 -- Command-line program definition

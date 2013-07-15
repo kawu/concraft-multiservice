@@ -1,5 +1,5 @@
 name:               concraft-multiservice
-version:            0.1.0
+version:            0.2.0
 synopsis:           Concraft service for the multiservice framework
 description:
     The package provides a concraft-multiserive executable tool which
