@@ -5,7 +5,7 @@
 import Options.Applicative
 import System.CPUTime (getCPUTime)
 import Control.Arrow (second)
-import Control.Monad (void, forM)
+import Control.Monad (void)
 import Data.Int (Int32)
 import Data.List (intercalate)
 import qualified System.IO as IO
@@ -79,43 +79,54 @@ instance Iface.AnnotatingService_Iface ConPL where
                  Just False }
 
 ---------------------------
--- Identifier record
+-- Application state
 ---------------------------
 
--- | A record of current identifier values.
-data IdS = IdS
+-- | A record with an application state.
+data CMState = CMState
     { currParId     :: !Int
+    -- ^ Paragraph ID.
     , currSentId    :: !Int
-    , currTokId     :: !Int }
+    -- ^ Sentence ID.
+    , currTokId     :: !Int
+    -- ^ Token ID.
+    , parLeft       :: !L.Text
+    -- ^ Paragraph text left to process.  Useful for offset computation.
+    -- Has to be updated when a new paragraph is supplied.
+    , currOffset    :: !Int32
+    -- ^ Offset of the current word.
+    }
 
 -- | Initial identifier values.
-initIdS :: IdS
-initIdS = IdS 0 0 (-1)
+initCMState :: CMState
+initCMState = CMState 0 0 (-1) "" 0
 
 -- | A Concraft monad.
-type CM = S.StateT IdS IO
+type CM = S.StateT CMState IO
 
 -- | Evalueate CM computation.
 evalCM :: CM a -> IO a
-evalCM cm = S.evalStateT cm initIdS
+evalCM cm = S.evalStateT cm initCMState
 
 -- | Build textual identifier value.
 buildId :: String -> [Int] -> L.Text
 buildId pref ks =
     L.pack $ pref ++ intercalate "." (map show ks)
 
--- | Get new paragraph ID.
-newParId :: CM L.Text
-newParId = do
+-- | Get new paragraph ID.  The function takes a paragraph text.
+newPar :: L.Text -> CM L.Text
+newPar tx = do
     S.modify $ \idS -> idS
         { currParId  = currParId idS + 1
         , currSentId = 0   
-        , currTokId  = 0 }
+        , currTokId  = 0
+        , parLeft    = tx
+        , currOffset = 0 }
     buildId "p-" <$> sequence [S.gets currParId]
 
 -- | Get new sentence ID.
-newSentId :: CM L.Text
-newSentId = do
+newSent :: CM L.Text
+newSent = do
     S.modify $ \idS -> idS
         { currSentId = currSentId idS + 1
         , currTokId  = (-1) }
@@ -124,13 +135,28 @@ newSentId = do
         , S.gets currSentId ]
 
 -- | Get new token ID.
-newTokId :: CM L.Text
-newTokId = do
+newTok :: CM L.Text
+newTok = do
     S.modify $ \idS -> idS {currTokId = currTokId idS + 1}
     buildId "seg-" <$> sequence
         [ S.gets currParId
         , S.gets currSentId
         , S.gets currTokId ]
+
+-- | "Eat" segment from the beginning of the given text
+-- and increase the offset counter.
+consumeSeg :: X.Seg a -> CM Int32
+consumeSeg seg = do
+    (tt, i) <- S.gets $ (,) <$> parLeft <*> currOffset
+    let (t0, t1) = L.span C.isSpace tt
+        orth = L.fromStrict $ X.orth $ X.word seg
+    case L.stripPrefix orth t1 of
+        Nothing -> error "Error during computation of offsets"
+        Just t2 -> S.modify $ \idS -> idS
+            { parLeft       = t2
+            , currOffset    = i + fromIntegral
+                (L.length t0 + L.length orth) }
+    return i
 
 ----------------------------
 -- Conversion and annotation
@@ -159,29 +185,26 @@ annPar :: ConPL -> TT.TParagraph -> CM TT.TParagraph
 annPar ConPL{..} tpar = case TT.f_TParagraph_text tpar of
     Nothing -> return tpar
     Just tx -> do
-        parId <- newParId
         lift $ L.putStr "> " >> L.putStrLn tx
-        par <- lift (P.tag macaPool concraft (L.toStrict tx)) >>= convertPar tx
+        parId <- newPar tx
+        par   <- lift (P.tag macaPool concraft (L.toStrict tx))
+             >>= fmap V.fromList . convertPar
         return $ tpar
             { TT.f_TParagraph_id        = Just parId
-            , TT.f_TParagraph_sentences = Just (V.fromList par) }
+            , TT.f_TParagraph_sentences = Just par }
 
 -- | Convert the paragraph to the list of thrift sentences.
-convertPar :: L.Text -> [X.Sent X.Tag] -> CM [TT.TSentence]
-convertPar tx toks =
-    let tokOffs = computeOffsets tx toks
-    in  mapM convertSent tokOffs 
+convertPar :: [X.Sent X.Tag] -> CM [TT.TSentence]
+convertPar = mapM convertSent
 
 -- | Convert the sentence to the thrift form.
-convertSent :: [(X.Seg X.Tag, Int32)] -> CM TT.TSentence
-convertSent tokOffs = do
-    sentId <- newSentId
-    toks   <- sequence
-        [ convertTok tok off
-        | (tok, off) <- tokOffs ]
+convertSent :: X.Sent X.Tag -> CM TT.TSentence
+convertSent sent = do
+    sentId <- newSent
+    toks   <- V.fromList <$> mapM convertTok sent
     return $ TT.TSentence
         { f_TSentence_id                = Just sentId
-        , f_TSentence_tokens            = Just (V.fromList toks)
+        , f_TSentence_tokens            = Just toks
         , f_TSentence_rejectedTokens    = Just V.empty
         , f_TSentence_words             = Just V.empty
         , f_TSentence_groups            = Just V.empty
@@ -190,15 +213,18 @@ convertSent tokOffs = do
         , f_TSentence_mentions          = Just V.empty }
 
 -- | Convert the token to the thrift form.
-convertTok :: X.Seg X.Tag -> Int32 -> CM TT.TToken
-convertTok X.Seg{..} offset = newTokId >>= \tokId -> return $ TT.TToken
-    { f_TToken_id                       = Just tokId
-    , f_TToken_orth                     = Just lorth
-    , f_TToken_offset                   = Just offset
-    , f_TToken_noPrecedingSpace         = Just (space == X.None)
-    , f_TToken_interpretations          = Just (V.fromList interps')
-    , f_TToken_chosenInterpretation     = chosen
-    , f_TToken_candidateInterpretations = Just V.empty }
+convertTok :: X.Seg X.Tag -> CM TT.TToken
+convertTok seg@X.Seg{..} = do
+    tokId  <- newTok
+    offset <- consumeSeg seg
+    return $ TT.TToken
+        { f_TToken_id                       = Just tokId
+        , f_TToken_orth                     = Just lorth
+        , f_TToken_offset                   = Just offset
+        , f_TToken_noPrecedingSpace         = Just (space == X.None)
+        , f_TToken_interpretations          = Just (V.fromList interps')
+        , f_TToken_chosenInterpretation     = chosen
+        , f_TToken_candidateInterpretations = Just V.empty }
   where
     lorth = L.fromStrict orth
     X.Word{..} = word
@@ -222,32 +248,6 @@ convertInterp orth X.Interp{..} = TT.TInterpretation
 -- | Split tag into the (class, msd) pair.
 splitTag :: X.Tag -> (L.Text, L.Text)
 splitTag = second (L.drop 1) . L.break (==':') . L.fromStrict
-
-----------------------------------
--- Offset computation
-----------------------------------
-
--- | TODO: Use more idiomatic code instead of the state monad
--- in order to make the function work lazily.
-
--- | Compute token offsets.
-computeOffsets :: L.Text -> [[X.Seg a]] -> [[(X.Seg a, Int32)]]
-computeOffsets txt xss =
-    flip S.evalState (txt, 0) $ forM xss $ mapM $ \seg -> do
-        (x, i) <- S.get
-        let (y, j) = eatSeg seg (x, i)
-        S.put (y, j)
-        return (seg, i)
-
--- | "Eat" word from the beginning of the given text
--- and increase the offset counter.
-eatSeg :: X.Seg a -> (L.Text, Int32) -> (L.Text, Int32)
-eatSeg seg (tt, i) = case L.stripPrefix orth t1 of
-    Nothing -> error "Error during computation of offsets"
-    Just t2 -> (t2, i + fromIntegral (L.length t0 + L.length orth))
-  where
-    (t0, t1) = L.span C.isSpace tt
-    orth = L.fromStrict $ X.orth $ X.word seg
 
 ----------------------------------
 -- Command-line program definition
