@@ -180,25 +180,27 @@ convertSent tokOffs = do
 convertTok :: X.Seg X.Tag -> Int32 -> CM TT.TToken
 convertTok X.Seg{..} offset = newTokId >>= \tokId -> return $ TT.TToken
     { f_TToken_id                       = Just tokId
-    , f_TToken_orth                     = (Just . L.fromStrict) orth
+    , f_TToken_orth                     = Just lorth
     , f_TToken_offset                   = Just offset
     , f_TToken_noPrecedingSpace         = Just (space == X.None)
     , f_TToken_interpretations          = Just (V.fromList interps')
     , f_TToken_chosenInterpretation     = chosen
     , f_TToken_candidateInterpretations = Just V.empty }
   where
+    lorth = L.fromStrict orth
     X.Word{..} = word
-    interps' = map (convertInterp . fst) (M.toList interps)
+    interps' = map (convertInterp lorth . fst) (M.toList interps)
     chosen   = maybeHead
-        [ convertInterp interp
+        [ convertInterp lorth interp
         | (interp, True) <- M.toList interps ]
     maybeHead []    = Nothing
     maybeHead (x:_) = Just x
 
--- | Convert interpretation to the thrift form.
-convertInterp :: X.Interp X.Tag -> TT.TInterpretation
-convertInterp X.Interp{..} = TT.TInterpretation
-    { f_TInterpretation_base    = Just $ maybe "" L.fromStrict base
+-- | Convert interpretation to the thrift form.  We use `X.orth`
+-- (should be supplied as the first argument) as a default base form.
+convertInterp :: L.Text -> X.Interp X.Tag -> TT.TInterpretation
+convertInterp orth X.Interp{..} = TT.TInterpretation
+    { f_TInterpretation_base    = Just $ maybe orth L.fromStrict base
     , f_TInterpretation_ctag    = Just ctag
     , f_TInterpretation_msd     = Just msd }
   where
