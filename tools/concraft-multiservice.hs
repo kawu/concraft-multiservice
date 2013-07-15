@@ -5,10 +5,9 @@
 import Options.Applicative
 import System.CPUTime (getCPUTime)
 import Control.Arrow (second)
+import Control.Monad (void)
 import Data.Int (Int32)
 import Data.List (intercalate)
-import qualified System.Process.Text.Lazy as Proc
-import qualified Data.Binary as Binary
 import qualified System.IO as IO
 import qualified Data.Map as M
 import qualified Data.Vector as V
@@ -16,6 +15,7 @@ import qualified Data.Text.Lazy as L
 import qualified Data.Text.Lazy.IO as L
 import qualified Data.HashMap.Strict as H
 import qualified Control.Monad.State.Strict as State
+import           Control.Monad.State.Strict (lift)
 
 -- Thrift library
 import Thrift.Server
@@ -25,22 +25,31 @@ import qualified Types_Types as TT
 import qualified AnnotatingService as Ann
 import qualified AnnotatingService_Iface as Iface
 
-import qualified NLP.Concraft as C
-import qualified NLP.Concraft.Format as F
-import qualified NLP.Concraft.Format.Plain as P
+import qualified NLP.Concraft as Core
+import qualified NLP.Concraft.Polish as P
+import qualified NLP.Concraft.Polish.Morphosyntax as X
+import qualified NLP.Concraft.Polish.Maca as P
+
+---------------------------
+-- Core data type
+---------------------------
+
+data ConPL = ConPL
+    { macaPool  :: P.MacaPool
+    , concraft  :: P.Concraft }
 
 ---------------------------
 -- Interface implementation
 ---------------------------
 
 -- | Implementation of the annotating service.
-instance Iface.AnnotatingService_Iface C.Concraft where
-    annotate concraft (Just ttext) _ =
+instance Iface.AnnotatingService_Iface ConPL where
+    annotate conPL (Just ttext) _ =
         case V.toList <$> TT.f_TText_paragraphs ttext of
             Nothing -> return ttext
             Just ps -> do
                 beg <- getCPUTime
-                ps' <- evalCM $ mapM (annPar concraft) ps
+                ps' <- evalCM $ mapM (annPar conPL) ps
                 end <- getCPUTime
                 let coef = 10 ^ (9 :: Integer)
                 let diff = (end - beg) `div` coef
@@ -132,40 +141,25 @@ addHeaders procTime
         , f_THeader_retrievedFrom = Just "" }
 
 -- | Annotate paragraph.
-annPar :: C.Concraft -> TT.TParagraph -> CM TT.TParagraph
-annPar concraft tpar = case TT.f_TParagraph_text tpar of
+annPar :: ConPL -> TT.TParagraph -> CM TT.TParagraph
+annPar ConPL{..} tpar = case TT.f_TParagraph_text tpar of
     Nothing -> return tpar
     Just tx -> do
         parId <- newParId
-        State.lift $ L.putStr "> "
-        State.lift $ L.putStrLn tx
-        par <- map (disamb concraft) <$> State.lift (macalyse tx)
-        sentences <- V.fromList <$> convertPar tx par
+        lift $ L.putStr "> " >> L.putStrLn tx
+        par <- lift (P.tag macaPool concraft (L.toStrict tx)) >>= convertPar tx
         return $ tpar
             { TT.f_TParagraph_id        = Just parId
-            , TT.f_TParagraph_sentences = Just sentences }
-
--- | Use Maca tool to analyse the input text.
-macalyse :: L.Text -> IO [[P.Token]]
-macalyse inp = do
-    let args = ["-q", "morfeusz-nkjp-official", "-o", "plain"]
-    (_exitCode, out, _) <- Proc.readProcessWithExitCode "maca-analyse" args inp
-    return $ P.parsePlain "ign" out
-
--- | Disambiguate sentence in the plain format.
-disamb :: C.Concraft -> [P.Token] -> [P.Token]
-disamb concraft toks =
-    let sentH = F.sentHandler (P.plainFormat "ign")
-    in  C.tagSent sentH concraft $ toks
+            , TT.f_TParagraph_sentences = Just (V.fromList par) }
 
 -- | Convert the paragraph to the list of thrift sentences.
-convertPar :: L.Text -> [[P.Token]] -> CM [TT.TSentence]
+convertPar :: L.Text -> [X.Sent X.Tag] -> CM [TT.TSentence]
 convertPar tx toks =
     let tokOffs = computeOffsets tx toks
     in  mapM convertSent tokOffs 
 
 -- | Convert the sentence to the thrift form.
-convertSent :: [(P.Token, Int32)] -> CM TT.TSentence
+convertSent :: [(X.Seg X.Tag, Int32)] -> CM TT.TSentence
 convertSent tokOffs = do
     sentId <- newSentId
     toks   <- sequence
@@ -182,26 +176,27 @@ convertSent tokOffs = do
         , f_TSentence_mentions          = Just V.empty }
 
 -- | Convert the token to the thrift form.
-convertTok :: P.Token -> Int32 -> CM TT.TToken
-convertTok tok offset = newTokId >>= \tokId -> return $ TT.TToken
+convertTok :: X.Seg X.Tag -> Int32 -> CM TT.TToken
+convertTok X.Seg{..} offset = newTokId >>= \tokId -> return $ TT.TToken
     { f_TToken_id                       = Just tokId
-    , f_TToken_orth                     = (Just . L.fromStrict) (P.orth tok)
+    , f_TToken_orth                     = (Just . L.fromStrict) orth
     , f_TToken_offset                   = Just offset
-    , f_TToken_noPrecedingSpace         = Just (P.space tok == P.None)
-    , f_TToken_interpretations          = Just (V.fromList interps)
+    , f_TToken_noPrecedingSpace         = Just (space == X.None)
+    , f_TToken_interpretations          = Just (V.fromList interps')
     , f_TToken_chosenInterpretation     = chosen
     , f_TToken_candidateInterpretations = Just V.empty }
   where
-    interps = map (convertInterp . fst) $ M.toList (P.interps tok)
-    chosen  = maybeHead
+    X.Word{..} = word
+    interps' = map (convertInterp . fst) (M.toList interps)
+    chosen   = maybeHead
         [ convertInterp interp
-        | (interp, True) <- M.toList (P.interps tok) ]
+        | (interp, True) <- M.toList interps ]
     maybeHead []    = Nothing
     maybeHead (x:_) = Just x
 
 -- | Convert interpretation to the thrift form.
-convertInterp :: P.Interp -> TT.TInterpretation
-convertInterp P.Interp{..} = TT.TInterpretation
+convertInterp :: X.Interp X.Tag -> TT.TInterpretation
+convertInterp X.Interp{..} = TT.TInterpretation
     { f_TInterpretation_base    = Just $ maybe "" L.fromStrict base
     , f_TInterpretation_ctag    = Just ctag
     , f_TInterpretation_msd     = Just msd }
@@ -209,12 +204,12 @@ convertInterp P.Interp{..} = TT.TInterpretation
     (ctag, msd) = splitTag tag
 
 -- | Split tag into the (class, msd) pair.
-splitTag :: F.Tag -> (L.Text, L.Text)
+splitTag :: X.Tag -> (L.Text, L.Text)
 splitTag = second (L.drop 1) . L.break (==':') . L.fromStrict
 
 -- | Compute token offsets.
 -- TODO: This is a stub, implement real offsets computation.
-computeOffsets :: L.Text -> [[P.Token]] -> [[(P.Token, Int32)]]
+computeOffsets :: L.Text -> [[X.Seg X.Tag]] -> [[(X.Seg X.Tag, Int32)]]
 computeOffsets _ tokss =
     [ map (,0) toks
     | toks <- tokss ]
@@ -236,16 +231,17 @@ service = Service
         <> help "Port number"
         <> value 10018 )
 
-decodeModel :: FilePath -> IO C.Concraft
-decodeModel = Binary.decodeFile
-
 runService :: Service -> IO ()
 runService Service{..} = do
+    putStrLn "Starting 1 maca instance..."
+    macaPool <- P.newMacaPool 1
     putStr "Reading model..." >> IO.hFlush IO.stdout
-    concraft <- decodeModel modelPath
-    C.disamb concraft `seq` putStrLn " done"
+    concraft <- P.loadModel modelPath
+    -- Check if `disamb` component has been loaded.
+    Core.disamb concraft `seq` putStrLn " done"
     putStrLn "Start server"
-    _ <- runBasicServer concraft Ann.process (fromIntegral port)
+    let conPL = ConPL macaPool concraft
+    void $ runBasicServer conPL Ann.process (fromIntegral port)
     putStrLn "Server stopped"
 
 main :: IO ()
@@ -255,4 +251,4 @@ main =
     opts = info (helper <*> service)
       ( fullDesc
      <> progDesc "Run Concraft multiservice component"
-     <> header "nerf-concraft" )
+     <> header "concraft-multiservice" )
