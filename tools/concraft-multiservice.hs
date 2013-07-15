@@ -6,7 +6,6 @@ import Options.Applicative
 import System.CPUTime (getCPUTime)
 import Control.Arrow (second)
 import Control.Monad (void)
-import Data.Int (Int32)
 import Data.List (intercalate)
 import qualified System.IO as IO
 import qualified Data.Char as C
@@ -93,7 +92,7 @@ data CMState = CMState
     , parLeft       :: !L.Text
     -- ^ Paragraph text left to process.  Useful for offset computation.
     -- Has to be updated when a new paragraph is supplied.
-    , currOffset    :: !Int32
+    , currOffset    :: !Int
     -- ^ Offset of the current word.
     }
 
@@ -116,8 +115,8 @@ buildId pref ks =
 -- | Get new paragraph ID.  The function takes a paragraph text.
 newPar :: L.Text -> CM L.Text
 newPar tx = do
-    S.modify $ \idS -> idS
-        { currParId  = currParId idS + 1
+    S.modify $ \cms -> cms
+        { currParId  = currParId cms + 1
         , currSentId = 0   
         , currTokId  = 0
         , parLeft    = tx
@@ -127,8 +126,8 @@ newPar tx = do
 -- | Get new sentence ID.
 newSent :: CM L.Text
 newSent = do
-    S.modify $ \idS -> idS
-        { currSentId = currSentId idS + 1
+    S.modify $ \cms -> cms
+        { currSentId = currSentId cms + 1
         , currTokId  = (-1) }
     buildId "s-" <$> sequence
         [ S.gets currParId
@@ -137,22 +136,21 @@ newSent = do
 -- | Get new token ID.
 newTok :: CM L.Text
 newTok = do
-    S.modify $ \idS -> idS {currTokId = currTokId idS + 1}
+    S.modify $ \cms -> cms {currTokId = currTokId cms + 1}
     buildId "seg-" <$> sequence
         [ S.gets currParId
         , S.gets currSentId
         , S.gets currTokId ]
 
--- | "Eat" segment from the beginning of the given text
+-- | "Eat" word from the beginning of the given text
 -- and increase the offset counter.
-consumeSeg :: X.Seg a -> CM Int32
-consumeSeg seg = do
+consumeOrth :: L.Text -> CM Int
+consumeOrth orth = do
     (tt, i) <- S.gets $ (,) <$> parLeft <*> currOffset
     let (t0, t1) = L.span C.isSpace tt
-        orth = L.fromStrict $ X.orth $ X.word seg
     case L.stripPrefix orth t1 of
         Nothing -> error "Error during computation of offsets"
-        Just t2 -> S.modify $ \idS -> idS
+        Just t2 -> S.modify $ \cms -> cms
             { parLeft       = t2
             , currOffset    = i + fromIntegral
                 (L.length t0 + L.length orth) }
@@ -216,11 +214,11 @@ convertSent sent = do
 convertTok :: X.Seg X.Tag -> CM TT.TToken
 convertTok seg@X.Seg{..} = do
     tokId  <- newTok
-    offset <- consumeSeg seg
+    offset <- consumeOrth $ L.fromStrict $ X.orth $ X.word seg
     return $ TT.TToken
         { f_TToken_id                       = Just tokId
         , f_TToken_orth                     = Just lorth
-        , f_TToken_offset                   = Just offset
+        , f_TToken_offset                   = Just (fromIntegral offset)
         , f_TToken_noPrecedingSpace         = Just (space == X.None)
         , f_TToken_interpretations          = Just (V.fromList interps')
         , f_TToken_chosenInterpretation     = chosen
