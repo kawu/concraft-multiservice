@@ -9,7 +9,7 @@ Building concraft-multiservice
 
 First, you need [Apache Thrift](http://thrift.apache.org/) to generate
 Haskell modules which are needed to compile the concraft-multiservice tool.
-The current concraft-multiservice version has been tested with the 0.9.0
+The current concraft-multiservice version has been tested with the 0.9.2
 version of Thrift.
 
 After you install the Thrift framework you can generate the additional

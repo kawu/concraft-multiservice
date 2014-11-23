@@ -27,6 +27,7 @@ import qualified AnnotatingService_Iface as Iface
 
 import qualified NLP.Concraft as Core
 import qualified NLP.Concraft.Polish as P
+import           NLP.Concraft.Morphosyntax (unWMap)
 import qualified NLP.Concraft.Polish.Morphosyntax as X
 import qualified NLP.Concraft.Polish.Maca as P
 
@@ -185,7 +186,9 @@ annPar ConPL{..} tpar = case TT.f_TParagraph_text tpar of
     Just tx -> do
         lift $ L.putStr "> " >> L.putStrLn tx
         parId <- newPar tx
-        par   <- lift (P.tag macaPool concraft (L.toStrict tx))
+        let tag x = map (P.tag concraft) <$> P.macaPar macaPool x
+        -- par   <- lift (P.tag macaPool concraft (L.toStrict tx))
+        par   <- lift (tag $ L.toStrict tx)
              >>= fmap V.fromList . convertPar
         return $ tpar
             { TT.f_TParagraph_id        = Just parId
@@ -226,18 +229,22 @@ convertTok seg@X.Seg{..} = do
   where
     lorth = L.fromStrict orth
     X.Word{..} = word
-    interps' = map (convertInterp lorth . fst) (M.toList interps)
+    interps' = map (convertInterp lorth . fst)
+                   (M.toList $ unWMap interps)
     chosen   = maybeHead
         [ convertInterp lorth interp
-        | (interp, True) <- M.toList interps ]
+        -- | (interp, True) <- M.toList interps ]
+        | (interp, weight) <- M.toList $ unWMap interps
+        , weight > 0 ]
     maybeHead []    = Nothing
     maybeHead (x:_) = Just x
 
 -- | Convert interpretation to the thrift form.  We use `X.orth`
 -- (should be supplied as the first argument) as a default base form.
 convertInterp :: L.Text -> X.Interp X.Tag -> TT.TInterpretation
-convertInterp orth X.Interp{..} = TT.TInterpretation
-    { f_TInterpretation_base    = Just $ maybe orth L.fromStrict base
+convertInterp _orth X.Interp{..} = TT.TInterpretation
+    -- { f_TInterpretation_base    = Just $ maybe orth L.fromStrict base
+    { f_TInterpretation_base    = Just $ L.fromStrict base
     , f_TInterpretation_ctag    = Just ctag
     , f_TInterpretation_msd     = Just msd }
   where
@@ -257,8 +264,8 @@ data Service = Service
 
 service :: Parser Service
 service = Service
-    <$> argument str (metavar "MODEL")
-    <*> option
+    <$> strArgument (metavar "MODEL")
+    <*> option auto
          ( long "port"
         <> short 'p'
         <> help "Port number"

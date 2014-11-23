@@ -20,9 +20,9 @@ executable concraft-multiservice
     main-is: concraft-multiservice.hs
     build-depends:
         base            >= 4 && < 5
-      , concraft        >= 0.7.3 && < 0.8
-      , concraft-pl     >= 0.2.1 && < 0.3
-      , thrift          >= 0.9 && < 0.10
+      , concraft        >= 0.9.3 && < 0.10
+      , concraft-pl     >= 0.7.3 && < 0.8
+      , thrift          >= 0.9.0 && < 0.9.1
       , process-extras  >= 0.2 && < 0.3
       , containers
       , network
@@ -38,4 +38,4 @@ executable concraft-multiservice
 
 source-repository head
     type: git
-    location: https://github.com/kawu/nerf-multiservice.git
+    location: https://github.com/kawu/concraft-multiservice.git
