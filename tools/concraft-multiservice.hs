@@ -183,11 +183,11 @@ addHeaders procTime
 annPar :: ConPL -> TT.TParagraph -> CM TT.TParagraph
 annPar ConPL{..} tpar = case TT.f_TParagraph_text tpar of
     Nothing -> return tpar
-    Just tx -> do
+    Just tx0 -> do
+        let tx = L.filter C.isPrint tx0
         lift $ L.putStr "> " >> L.putStrLn tx
         parId <- newPar tx
         let tag x = map (P.tag concraft) <$> P.macaPar macaPool x
-        -- par   <- lift (P.tag macaPool concraft (L.toStrict tx))
         par   <- lift (tag $ L.toStrict tx)
              >>= fmap V.fromList . convertPar
         return $ tpar
