@@ -1,5 +1,5 @@
 namespace cpp multiservice
-namespace java pl.waw.ipipan.multiservice.thrift.types
+namespace java pl.waw.ipipan.zil.multiservice.thrift.types
 namespace py multiservice.types
 
 enum TAnnotationLayer {
@@ -11,7 +11,8 @@ enum TAnnotationLayer {
    SUMMARY,
    DEPENDENCY_PARSE,
    MENTIONS,
-   COREFERENCE
+   COREFERENCE,
+   SENTIMENT
 }
 
 exception MultiserviceException {
@@ -39,7 +40,8 @@ struct TSyntacticWord {
     2: string orth,
     3: TInterpretation chosenInterpretation,
     4: list<TInterpretation> candidateInterpretations,
-    5: list<string> childIds
+    5: list<string> childIds,
+    6: string rule
 }
 
 struct TSyntacticGroup {
@@ -48,7 +50,16 @@ struct TSyntacticGroup {
     3: string semanticHeadId,
     4: string syntacticHeadId,
     5: list<string> childIds,
-    6: string type
+    6: string type,
+    7: string rule
+}
+
+struct TSentimentTag {
+    1: string id,
+    2: string orth,
+    3: double value, // -1 means "extremely negative", 1 means "extremely positive"
+    4: list<string> childIds, // contains ids of morphosyntactic entities
+    5: string rule
 }
 
 struct TNamedEntity {
@@ -68,8 +79,9 @@ struct DependencyParseNode {
 
 struct TMention {
     1: string id,
-    2: list<string> headIds
-    3: list<string> childIds
+    2: list<string> headIds,
+    3: list<string> childIds,
+    4: bool zeroSubject
 }
 
 struct TCoreference {
@@ -88,7 +100,8 @@ struct TSentence {
     5: list<TSyntacticGroup> groups,
     6: list<TNamedEntity> names,
     7: list<DependencyParseNode> dependencyParse,
-    8: list<TMention> mentions    
+    8: list<TMention> mentions,
+    9: list<TSentimentTag> sentimentTags
 }
 
 struct TParagraph {

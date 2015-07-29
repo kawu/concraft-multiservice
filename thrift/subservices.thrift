@@ -1,6 +1,6 @@
 
 namespace cpp multiservice
-namespace java pl.waw.ipipan.multiservice.thrift.services
+namespace java pl.waw.ipipan.zil.multiservice.thrift.services
 namespace py multiservice.subservices
 
 include "types.thrift"

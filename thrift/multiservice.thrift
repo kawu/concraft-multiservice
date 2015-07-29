@@ -1,6 +1,6 @@
 
 namespace cpp multiservice
-namespace java pl.waw.ipipan.multiservice.thrift
+namespace java pl.waw.ipipan.zil.multiservice.thrift
 namespace py multiservice.facade
 
 include "types.thrift"

@@ -211,7 +211,8 @@ convertSent sent = do
         , f_TSentence_groups            = Just V.empty
         , f_TSentence_names             = Just V.empty
         , f_TSentence_dependencyParse   = Just V.empty
-        , f_TSentence_mentions          = Just V.empty }
+        , f_TSentence_mentions          = Just V.empty
+        , f_TSentence_sentimentTags     = Just V.empty }
 
 -- | Convert the token to the thrift form.
 convertTok :: X.Seg X.Tag -> CM TT.TToken
