@@ -34,7 +34,7 @@ executable concraft-multiservice
       , vector
       , hashable
       , unordered-containers
-    ghc-options: -Wall -O2 -threaded -rtsopts
+    ghc-options: -Wall -Werror -O2 -threaded -rtsopts
 
 source-repository head
     type: git

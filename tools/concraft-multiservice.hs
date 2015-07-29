@@ -45,6 +45,7 @@ data ConPL = ConPL
 
 -- | Implementation of the annotating service.
 instance Iface.AnnotatingService_Iface ConPL where
+    annotate _ Nothing _ = error "concraft-multiservice: empty input text"
     annotate conPL (Just ttext) _ =
         case V.toList <$> TT.f_TText_paragraphs ttext of
             Nothing -> return ttext
